@@ -7,6 +7,7 @@ AI grading of student team works (PDF decks from Moodle) with LLMs. Plan and dec
 - **Never read or print `config/secrets.json`**; never ask for keys in chat. Verify access by running code (`python -m core.s3check`).
 - Score arithmetic (sum, total_score_100) is done by code, never trusted from the LLM.
 - Idempotency: a stage writes artifacts first, `manifest.json` LAST (`core/manifest.py`); a unit is done only if the manifest matches input and config hashes.
+- The LLM response cache never replays a rejected answer: rejections are evicted (`Gateway.evict`) and repair attempts bypass the cache (`use_cache=False`), so a retry or a re-run re-asks the model instead of looping on the same failure.
 - Technical pre-check FAIL (not PDF / anonymous / not machine-readable) => 0 points and NO LLM call. OCR is opt-in per run.
 - AI detection (stage 3) is informational and never changes scores.
 - Manipulation hints (stage 2 `HIDDEN_TEXT`/`INJECTION_SUSPECTED` -> `technical_warnings`; stage 3 `manipulation_attempt` -> `quality_flags`) and `PARTIALLY_READABLE` (stage 2: some slides have no usable text layer, §32 in PLAN.md) never change scores, are hidden from the grader's input and do not use `needs_human_review`. See `docs/INJECTIONS.md`.

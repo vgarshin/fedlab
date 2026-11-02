@@ -2,7 +2,8 @@
 
 The model never does arithmetic that matters: sums and the 100-point total are recomputed here.
 Participant-facing feedback is checked for the words the lab forbids; a violation triggers one
-repair attempt, then a flag for the reviewer (never a silent pass).
+repair attempt, then a flag for the reviewer (never a silent pass). A rejected answer is evicted
+from the LLM response cache, so a re-run asks the model again instead of replaying the failure.
 """
 from __future__ import annotations
 
@@ -26,6 +27,35 @@ FORBIDDEN_RE = re.compile("|".join(FORBIDDEN_STEMS), re.IGNORECASE)
 
 class GradeError(RuntimeError):
     pass
+
+
+# Short Russian hints for the repair prompt instead of the raw English pydantic dump.
+_SCHEMA_HINTS_RU = {
+    "model_type": "ожидается объект",
+    "int_type": "ожидается целое число",
+    "int_parsing": "ожидается целое число",
+    "string_type": "ожидается строка",
+    "bool_type": "ожидается true или false",
+    "list_type": "ожидается список",
+    "greater_than_equal": "значение меньше допустимого",
+    "less_than_equal": "значение больше допустимого",
+    "literal_error": "недопустимое значение поля",
+    "missing": "поле отсутствует",
+    "extra_forbidden": "лишнее поле",
+}
+
+
+def _schema_problem(exc: ValidationError) -> str:
+    """Compact Russian feedback for the repair prompt; the raw dump stays in the raw artifact."""
+    parts = []
+    for err in exc.errors()[:6]:
+        loc = [str(p) for p in err["loc"]]
+        if err["type"] == "model_type" and len(loc) == 2 and loc[0] == "scores" and loc[1] not in CRITERIA:
+            parts.append(f"поле '{loc[1]}' должно быть на верхнем уровне JSON-объекта рядом с 'scores', "
+                         f"а не внутри scores")
+        else:
+            parts.append(f"'{'.'.join(loc)}': {_SCHEMA_HINTS_RU.get(err['type'], err['msg'])}")
+    return ("schema violation: " + "; ".join(parts))[:600]
 
 
 def parse_json_object(text: str) -> dict:
@@ -65,7 +95,7 @@ def finalize_grade(raw: dict, team_name: str) -> GradeResult:
     try:
         r = GradeResult.model_validate(raw)
     except ValidationError as exc:
-        raise GradeError(f"schema violation: {exc.errors()[:3]}") from exc
+        raise GradeError(_schema_problem(exc)) from exc
     if r.status == "EVALUATED":
         if r.scores is None or set(r.scores) != set(CRITERIA):
             raise GradeError(f"EVALUATED needs exactly {sorted(CRITERIA)}, got {sorted(r.scores or {})}")
@@ -142,7 +172,8 @@ async def _grade_with_llm(data, gw, run_id, team_id, slug, team_name, pages, met
         msg = user if not problem else (
             user + "\n\nПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ОТКЛОНЁН АВТОМАТИЧЕСКОЙ ПРОВЕРКОЙ:\n" + problem +
             "\nИсправь ответ и верни ТОЛЬКО один валидный JSON-объект по заданному формату.")
-        res: LlmResult = await gw.complete(model, prompt_text, msg, tag, cap_rub=cap_rub)
+        # repair never reads the cache: it must ask the model, not replay the rejected answer
+        res: LlmResult = await gw.complete(model, prompt_text, msg, tag, cap_rub=cap_rub, use_cache=not problem)
         meta["attempts"] += 1
         meta["list_cost_rub"] = round(meta["list_cost_rub"] + cost_rub(model, res.prompt_tokens, res.completion_tokens), 6)
         meta["latency_ms"] += res.latency_ms or res.original_latency_ms
@@ -154,10 +185,12 @@ async def _grade_with_llm(data, gw, run_id, team_id, slug, team_name, pages, met
             result = finalize_grade(parse_json_object(res.text), team_name)
         except GradeError as exc:
             problem, result = str(exc), None
+            await gw.evict(model, prompt_text, msg)  # a rejected answer must never be replayed
             continue
         hits = forbidden_hits(result)
         if hits and attempt == 0:
             problem = f"В обратной связи для участников использованы запрещённые слова: {', '.join(hits)}. Перефразируй."
+            await gw.evict(model, prompt_text, msg)
             continue
         if hits:
             result.quality_flags.append("forbidden_words:" + ",".join(hits))

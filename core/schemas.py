@@ -95,6 +95,44 @@ class CriterionScore(BaseModel):
     feedback: str = ""
 
 
+# GradeResult fields the model sometimes puts INSIDE ``scores``: field -> its empty/default value
+_SUMMARY_FIELDS = {
+    "sum_score_60": 0,
+    "total_score_100": 0,
+    "general_feedback": "",
+    "technical_warnings": [],
+    "needs_human_review": False,
+}
+
+
+def _lift_misplaced_scores(raw: dict) -> dict:
+    """Lift summary fields misplaced inside ``scores`` to the top level (a common LLM nesting mistake
+    that once made whole teams ungradeable). A top-level value wins over a nested copy; unknown keys
+    are dropped. Never a silent pass: every change is recorded in ``quality_flags``."""
+    scores = raw.get("scores")
+    if not isinstance(scores, dict):
+        return raw
+    misplaced = {k: v for k, v in scores.items() if k not in CRITERIA}
+    if not misplaced:
+        return raw
+    raw = {**raw, "scores": {k: v for k, v in scores.items() if k in CRITERIA}}
+    lifted, dropped = [], []
+    for k, v in misplaced.items():
+        # a nested value wins only over a missing/default top-level one; None is never lifted
+        if k in _SUMMARY_FIELDS and v is not None and raw.get(k, _SUMMARY_FIELDS[k]) == _SUMMARY_FIELDS[k]:
+            raw[k] = v
+            lifted.append(k)
+        else:
+            dropped.append(k)
+    flags = list(raw.get("quality_flags") or [])
+    if lifted:
+        flags.append("lifted_from_scores:" + ",".join(sorted(lifted)))
+    if dropped:
+        flags.append("dropped_scores_keys:" + ",".join(sorted(dropped)))
+    raw["quality_flags"] = flags
+    return raw
+
+
 class GradeResult(BaseModel):
     team_name: str = ""
     status: Literal["EVALUATED", "DISQUALIFIED"]
@@ -110,6 +148,11 @@ class GradeResult(BaseModel):
     needs_human_review: bool = False
     # added by code, not by the model
     quality_flags: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _lift_misplaced_scores(cls, v):
+        return _lift_misplaced_scores(v) if isinstance(v, dict) else v
 
 
 class AiSignal(BaseModel):

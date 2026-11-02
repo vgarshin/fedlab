@@ -96,6 +96,11 @@ class Gateway:
         raw = json.dumps([m.provider, m.model, m.reasoning_effort, temperature, system, user], ensure_ascii=False)
         return f"_cache/llm/{m.id}/{hashlib.sha256(raw.encode()).hexdigest()}.json"
 
+    async def evict(self, m: ModelEntry, system: str, user: str, temperature: float = 0.0) -> None:
+        """Drop the cached answer: a rejected response must never be replayed on a retry or a re-run
+        (a cached rejection used to make re-grades deterministically fail on the same answer)."""
+        await self._cache.delete(self.cache_key(m, system, user, temperature))
+
     async def spent(self, run_id: int) -> float:
         async with self._sessions() as s:
             return float((await s.execute(select(func.coalesce(func.sum(LlmCall.cost_rub), 0.0))

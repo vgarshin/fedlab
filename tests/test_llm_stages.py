@@ -1,12 +1,14 @@
 import json
 
 import pytest
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 
 from core import keys, pipeline, registry
 from core.db import LlmCall, ModelEntry, PromptVersion, Team
 from core.llm import BudgetExceeded, Gateway
-from core.stages.grading import FORBIDDEN_RE, GradeError, finalize_grade
+from core.schemas import CriterionScore, GradeResult
+from core.stages.grading import FORBIDDEN_RE, GradeError, _schema_problem, finalize_grade
 from tests.conftest import make_pdf, make_zip
 from tests.fakes import FakeClient, good_detect, good_grade
 from tests.helpers import make_ctx, make_run
@@ -58,6 +60,50 @@ def test_finalize_rejects_bad_shapes():
         finalize_grade(bad, "T")
 
 
+def test_finalize_lifts_summary_fields_nested_in_scores():
+    """The 'В чем сила'/'гагары' failure: the model put sum_score_60, total_score_100 and
+    general_feedback inside scores; the schema lifts them instead of rejecting the work."""
+    nested = good_grade(8)
+    for k in ("sum_score_60", "total_score_100", "general_feedback"):
+        nested["scores"][k] = nested.pop(k)
+    r = finalize_grade(nested, "T")
+    assert (r.sum_score_60, r.total_score_100) == (48, 80)
+    assert any(f.startswith("lifted_from_scores") for f in r.quality_flags)
+
+
+def test_finalize_prefers_top_level_and_drops_nested_copies():
+    bad = good_grade(6)
+    bad["scores"]["general_feedback"] = "вложенный текст"
+    r = finalize_grade(bad, "T")
+    assert r.general_feedback == "Хорошая работа с понятной логикой."
+    assert any(f.startswith("dropped_scores_keys") for f in r.quality_flags)
+
+
+def test_finalize_drops_unknown_scores_keys():
+    bad = good_grade(6)
+    bad["scores"]["criterion_7"] = {"score": 5}
+    r = finalize_grade(bad, "T")
+    assert "criterion_7" not in (r.scores or {})
+    assert any(f.startswith("dropped_scores_keys") for f in r.quality_flags)
+
+
+def test_schema_problem_hints_misplaced_scores_fields():
+    """The repair message must tell the model to move the fields to the top level, not feed it the raw dump."""
+    class _Probe(BaseModel):                   # no lifting, like the raw model answer
+        scores: dict[str, CriterionScore]
+
+    with pytest.raises(ValidationError) as e:
+        _Probe.model_validate({"scores": {"sum_score_60": 34, "criterion_1": {"score": 1}}})
+    problem = _schema_problem(e.value)
+    assert "верхнем уровне" in problem and "sum_score_60" in problem and "pydantic.dev" not in problem
+
+
+def test_lifted_grade_result_is_valid_schema():
+    raw = good_grade(7)
+    raw["scores"]["general_feedback"] = raw.pop("general_feedback")
+    assert GradeResult.model_validate(raw).general_feedback == "Хорошая работа с понятной логикой."
+
+
 async def test_grade_happy_path_cost_and_cache(tmp_path):
     client = FakeClient([good_grade(8)])
     ctx, run_id, teams = await prepared(tmp_path, client)
@@ -97,6 +143,38 @@ async def test_repair_on_invalid_json_then_fail(tmp_path):
     with pytest.raises(GradeError):
         await pipeline.run_team_stage(ctx, run_id, teams["Альфа"], "s4_grade")
     assert len(client.calls) == 2
+
+
+async def test_grade_rescues_summary_fields_nested_in_scores(tmp_path):
+    """The exact production failure: nested summary fields are lifted, one cached call, no repair."""
+    nested = good_grade(8)
+    for k in ("sum_score_60", "total_score_100", "general_feedback"):
+        nested["scores"][k] = nested.pop(k)
+    client = FakeClient([nested])
+    ctx, run_id, teams = await prepared(tmp_path, client)
+    r = await pipeline.run_team_stage(ctx, run_id, teams["Альфа"], "s4_grade")
+    assert r["status"] == "EVALUATED" and len(client.calls) == 1
+    async with ctx.sessions() as s:
+        t = await s.get(Team, teams["Альфа"])
+        stored = json.loads(await ctx.stores.data.get(keys.artifact(run_id, "Альфа_101", "s4_grade.json")))
+    assert (t.grade_total, t.grade_status) == (80, "EVALUATED")
+    assert any(f.startswith("lifted_from_scores") for f in stored["result"]["quality_flags"])
+
+
+async def test_rejected_answer_is_not_replayed_from_cache(tmp_path):
+    """A cached rejection used to make re-runs deterministically fail: attempt 1 replayed the bad
+    answer and the repair message was byte-identical, so the same failure looped forever."""
+    bad = good_grade(8)
+    bad["scores"]["criterion_1"]["score"] = 11
+    client = FakeClient([bad, good_grade(8)])
+    ctx, run_id, teams = await prepared(tmp_path, client)
+    await pipeline.run_team_stage(ctx, run_id, teams["Альфа"], "s4_grade")
+    assert len(client.calls) == 2
+    repair_msg = client.calls[1]["messages"][1]["content"]
+    assert "ПРЕДЫДУЩИЙ ОТВЕТ" in repair_msg and "scores.criterion_1.score" in repair_msg
+    await ctx.stores.data.delete(keys.manifest(run_id, "Альфа_101", "s4_grade"))
+    await pipeline.run_team_stage(ctx, run_id, teams["Альфа"], "s4_grade")
+    assert len(client.calls) == 3                   # attempt 1 hit the model again: the bad answer was evicted
 
 
 async def test_technical_failure_makes_no_llm_call(tmp_path):
