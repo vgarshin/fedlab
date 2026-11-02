@@ -1,0 +1,16 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fedlab Grader · Sign in</title><link rel="stylesheet" href="vtb.css"></head><body><main class="login"><section class="hero">
+<div class="brand"><svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="var(--brand)"/><rect x="13" y="8" width="38" height="48" rx="5" fill="#fff"/>
+<g fill="none" stroke="#0a2896" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="18.5" y="15" width="9" height="9" rx="2.2"/><path d="M20.6 19.6l2.2 2.2 3.4-4.2"/>
+<rect x="18.5" y="28" width="9" height="9" rx="2.2"/><path d="M20.6 32.6l2.2 2.2 3.4-4.2"/><rect x="18.5" y="41" width="9" height="9" rx="2.2"/><path d="M20.6 45.6l2.2 2.2 3.4-4.2"/></g>
+<g stroke="#a9c2e8" stroke-width="3" stroke-linecap="round"><path d="M32 19.5h13M32 32.5h13M32 45.5h13"/></g></svg>Fedlab Grader</div>
+<div><h1>Fair, fast grading of team work</h1><p>AI-assisted checking of case presentations with full transparency: every step, every score and every cost in one place.</p></div>
+<div class="small" style="opacity:.8">Business solutions laboratory · autumn 2026</div>
+<span class="blob" style="width:420px;height:420px;right:-140px;top:-120px"></span><span class="blob" style="width:260px;height:260px;right:120px;bottom:-110px"></span></section>
+<section class="formside"><span class="theme"><button data-t="light">Light</button><button data-t="auto">Auto</button><button data-t="dark">Dark</button></span><div class="formcard"><h2 style="margin-top:0;font-size:1.6rem">Sign in</h2><p class="muted">Use your Yandex ID. Access is granted by an administrator.</p>
+<a class="btn primary big" href="run.html">Sign in with Yandex ID</a>
+<p class="small muted" style="margin-bottom:0">No access yet? Ask an admin to add your e-mail.</p></div></section></main><script>
+(function(){var r=document.documentElement,k="fedlab-proposal-theme";try{var t=localStorage.getItem(k);if(t)r.dataset.theme=t;}catch(e){}
+function set(t){if(t==="auto"){delete r.dataset.theme;try{localStorage.removeItem(k)}catch(e){}}else{r.dataset.theme=t;try{localStorage.setItem(k,t)}catch(e){}}mark();}
+function mark(){var cur=r.dataset.theme||"auto";document.querySelectorAll(".theme button").forEach(function(b){b.classList.toggle("on",b.dataset.t===cur)})}
+document.querySelectorAll(".theme button").forEach(function(b){b.onclick=function(){set(b.dataset.t)}});mark();})();
+</script></body></html>

@@ -1,0 +1,70 @@
+# Production-like stack. Dev: docker compose up --build   (docker-compose.override.yml is picked up automatically)
+# Prod on the VM:  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+x-app: &app
+  build: .
+  environment: &app-env
+    FEDLAB_SETTINGS_PATH: /app/config/settings.json
+    FEDLAB_SECRETS_PATH: /run/secrets/app_secrets
+  secrets: [app_secrets]
+  volumes:
+    - ./config/settings.json:/app/config/settings.json:ro
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+  restart: unless-stopped
+
+services:
+  api:
+    <<: *app
+    command: ["uvicorn", "api.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000",
+              "--proxy-headers", "--forwarded-allow-ips", "*"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *app
+    command: ["arq", "worker.main.WorkerSettings"]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fedlab
+      POSTGRES_USER: fedlab
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg_password
+    secrets: [pg_password]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fedlab -d fedlab"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    # shared_buffers kept small: the VM has 4 GB and the heavy work is remote LLM calls
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=60"]
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+secrets:
+  app_secrets:
+    file: ./config/secrets.json
+  pg_password:
+    file: ./config/.pg_password   # created by deploy/prepare-secrets.sh from secrets.json
+
+volumes:
+  pg-data:
+  redis-data:

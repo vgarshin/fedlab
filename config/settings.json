@@ -1,0 +1,190 @@
+{
+  "env": "prod",
+  "domain": "aigrade.tech",
+  "bootstrap_admin_emails": [
+    "vgarshin@yandex.ru"
+  ],
+  "object_storage": {
+    "endpoint": "https://api.s3.dp.t1.cloud",
+    "region": "dc1",
+    "buckets": {
+      "input": "fedlab-grade-data",
+      "result": "fedlab-result-data"
+    },
+    "work_prefix": "_work/"
+  },
+  "budget": {
+    "run_cap_rub": 1000
+  },
+  "yandex": {
+    "folder_id": "b1gerja4eh37e1jfs0fp",
+    "llm_base_url": "https://llm.api.cloud.yandex.net/v1",
+    "llm_model": "deepseek-v4-flash",
+    "llm_reasoning_effort": "none",
+    "llm_timeout_seconds": 60
+  },
+  "cloudru": {
+    "llm_base_url": "https://foundation-models.api.cloud.ru/v1",
+    "llm_timeout_seconds": 120
+  },
+  "oauth": {
+    "redirect_uri": "https://aigrade.tech/api/auth/callback",
+    "scopes": "login:info login:email"
+  },
+  "ocr": {
+    "base_url": "https://ocr.api.cloud.yandex.net/ocr/v1",
+    "model": "page",
+    "languages": [
+      "ru",
+      "en"
+    ],
+    "dpi": 200,
+    "timeout_seconds": 60,
+    "max_requests_per_second": 1.0,
+    "price_per_page_rub": 0.1321
+  },
+  "processing": {
+    "worker_concurrency": 4,
+    "max_attempts": 3,
+    "max_upload_mb": 1000,
+    "min_text_chars_machine_readable": 50,
+    "max_garbled_ratio": 0.05,
+    "char_limit": 10000,
+    "empty_slide_min_chars": 5
+  },
+  "session": {
+    "cookie_name": "fedlab_session",
+    "ttl_hours": 12
+  },
+  "storage": {
+    "backend": "s3"
+  },
+  "database": {
+    "host": "postgres",
+    "port": 5432,
+    "name": "fedlab",
+    "user": "fedlab"
+  },
+  "redis": {
+    "url": "redis://redis:6379"
+  },
+  "models": [
+    {
+      "id": "yandex-deepseek-v4-flash",
+      "provider": "yandex",
+      "model": "deepseek-v4-flash",
+      "label": "DeepSeek V4 Flash (Yandex AI Studio)",
+      "price_in_per_1m": 300,
+      "price_out_per_1m": 500,
+      "max_concurrency": 4,
+      "reasoning_effort": "none",
+      "enabled": true,
+      "prices_checked": "2026-10-23 yandex price list",
+      "price_cached_per_1m": 75
+    },
+    {
+      "id": "cloudru-deepseek-v4-flash",
+      "provider": "cloudru",
+      "model": "deepseek-ai/DeepSeek-V4-Flash",
+      "label": "DeepSeek V4 Flash (Cloud.ru)",
+      "price_in_per_1m": 43.2978,
+      "price_out_per_1m": 86.5834,
+      "max_concurrency": 4,
+      "reasoning_effort": "low",
+      "enabled": true,
+      "prices_checked": "2026-10-18 catalog"
+    },
+    {
+      "id": "cloudru-kimi-k2-6",
+      "provider": "cloudru",
+      "model": "moonshotai/Kimi-K2.6",
+      "label": "Kimi K2.6 (Cloud.ru)",
+      "price_in_per_1m": 175.68,
+      "price_out_per_1m": 725.9,
+      "max_concurrency": 4,
+      "reasoning_effort": "",
+      "enabled": false,
+      "prices_checked": "2026-10-18 catalog"
+    },
+    {
+      "id": "cloudru-gigachat-3-5",
+      "provider": "cloudru",
+      "model": "ai-sage/GigaChat3.5-432B-A28B-Reasoning",
+      "label": "GigaChat 3.5 432B (Cloud.ru)",
+      "price_in_per_1m": 96.22,
+      "price_out_per_1m": 288.6,
+      "max_concurrency": 4,
+      "reasoning_effort": "",
+      "enabled": false,
+      "prices_checked": "2026-10-18 catalog"
+    },
+    {
+      "id": "yandex-deepseek-v4-1-flash",
+      "provider": "yandex",
+      "model": "deepseek-v4.1-flash",
+      "label": "DeepSeek V4.1 Flash (Yandex AI Studio)",
+      "price_in_per_1m": 300,
+      "price_cached_per_1m": 75,
+      "price_out_per_1m": 500,
+      "max_concurrency": 4,
+      "reasoning_effort": "none",
+      "enabled": true,
+      "prices_checked": "2026-10-23 yandex price list"
+    },
+    {
+      "id": "yandex-qwen3-6-35b",
+      "provider": "yandex",
+      "model": "qwen3.6-35b-a3b",
+      "label": "Qwen3.6 35B (Yandex AI Studio)",
+      "price_in_per_1m": 200,
+      "price_cached_per_1m": 50,
+      "price_out_per_1m": 300,
+      "max_concurrency": 4,
+      "reasoning_effort": "",
+      "enabled": false,
+      "prices_checked": "2026-10-23 yandex price list"
+    },
+    {
+      "id": "yandex-gpt-oss-120b",
+      "provider": "yandex",
+      "model": "gpt-oss-120b",
+      "label": "gpt-oss-120b (Yandex AI Studio)",
+      "price_in_per_1m": 300,
+      "price_cached_per_1m": 300,
+      "price_out_per_1m": 300,
+      "max_concurrency": 4,
+      "reasoning_effort": "",
+      "enabled": false,
+      "prices_checked": "2026-10-23 yandex price list"
+    },
+    {
+      "id": "yandex-gpt-oss-20b",
+      "provider": "yandex",
+      "model": "gpt-oss-20b",
+      "label": "gpt-oss-20b (Yandex AI Studio)",
+      "price_in_per_1m": 100,
+      "price_cached_per_1m": 100,
+      "price_out_per_1m": 100,
+      "max_concurrency": 4,
+      "reasoning_effort": "",
+      "enabled": false,
+      "prices_checked": "2026-10-23 yandex price list"
+    }
+  ],
+  "export": {
+    "csv_mode": "both",
+    "score_line": "Итоговый балл: {total} из 100.",
+    "feedback_header": "Обратная связь участнику:"
+  },
+  "incoming_prefix": "incoming/",
+  "defaults": {
+    "grade_model": "yandex-deepseek-v4-1-flash",
+    "detect_model": "yandex-deepseek-v4-1-flash",
+    "grade_prompt": "grade_short",
+    "detect_prompt": "ai_detect"
+  },
+  "run_id_start": 1,
+  "stages": {
+    "detect_enabled": true
+  }
+}

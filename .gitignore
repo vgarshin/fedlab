@@ -1,0 +1,11 @@
+config/secrets.json
+config/users.json
+_reqs/
+.env
+__pycache__/
+node_modules/
+*.pyc
+web/dist/
+config/.pg_password
+.pytest_cache/
+_design/shots/

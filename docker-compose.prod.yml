@@ -1,0 +1,49 @@
+# docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build   (needs .env: SERVER_NAME, CERTBOT_EMAIL)
+x-logging: &logging
+  driver: json-file
+  options: {max-size: "10m", max-file: "3"}
+
+services:
+  api:
+    logging: *logging
+  worker:
+    logging: *logging
+  postgres:
+    logging: *logging
+  redis:
+    logging: *logging
+  nginx:
+    build:
+      context: .
+      dockerfile: deploy/nginx/Dockerfile   # builds the React app, then serves it
+    image: fedlab-nginx
+    depends_on:
+      api: {condition: service_healthy}
+    environment:
+      SERVER_NAME: ${SERVER_NAME:?set SERVER_NAME in .env}
+      HSTS_MAX_AGE: ${HSTS_MAX_AGE:-86400}
+      UPLOAD_BODY_LIMIT: ${UPLOAD_BODY_LIMIT:-1100m}   # nginx cap: processing.max_upload_mb + ~10% multipart overhead
+      UPLOAD_LIMIT_MB: ${UPLOAD_LIMIT_MB:-1000}        # must match processing.max_upload_mb in config/settings.json
+    ports: ["80:80", "443:443"]
+    volumes:
+      - certbot-etc:/etc/letsencrypt:ro
+      - certbot-www:/var/www/certbot:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/nginx-health"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    logging: *logging
+  certbot:
+    image: certbot/certbot:v3.0.1
+    entrypoint: ["/bin/sh", "-c", "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"]
+    volumes:
+      - certbot-etc:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    restart: unless-stopped
+    logging: *logging
+
+volumes:
+  certbot-etc:
+  certbot-www:

@@ -1,0 +1,18 @@
+# Test runner: docker compose -f docker-compose.test.yml run --rm test
+services:
+  test:
+    build:
+      context: .
+      args: {INSTALL_DEV: "true"}
+    user: "1000:1000"
+    working_dir: /app
+    volumes:
+      - ./core:/app/core
+      - ./api:/app/api
+      - ./worker:/app/worker
+      - ./tests:/app/tests
+      - ./prompts:/app/prompts
+      - ./docs:/app/docs
+      - ./pytest.ini:/app/pytest.ini
+      - ./_reqs:/app/_reqs:ro
+    command: ["pytest", "-q"]

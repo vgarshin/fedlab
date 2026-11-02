@@ -1,0 +1,6 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Fedlab Grader · Proposal</title><link rel="stylesheet" href="vtb.css"></head><body><main class="page"><h1>Style proposal · corporate blue</h1><p class="muted">Open the three pages; use Light / Auto / Dark at the top right. Static demo data, nothing here is connected to the app.</p><div class="row"><a class="btn primary" href="login.html">Login</a><a class="btn primary" href="run.html">Run</a><a class="btn primary" href="analytics.html">Analytics</a></div></main><script>
+(function(){var r=document.documentElement,k="fedlab-proposal-theme";try{var t=localStorage.getItem(k);if(t)r.dataset.theme=t;}catch(e){}
+function set(t){if(t==="auto"){delete r.dataset.theme;try{localStorage.removeItem(k)}catch(e){}}else{r.dataset.theme=t;try{localStorage.setItem(k,t)}catch(e){}}mark();}
+function mark(){var cur=r.dataset.theme||"auto";document.querySelectorAll(".theme button").forEach(function(b){b.classList.toggle("on",b.dataset.t===cur)})}
+document.querySelectorAll(".theme button").forEach(function(b){b.onclick=function(){set(b.dataset.t)}});mark();})();
+</script></body></html>

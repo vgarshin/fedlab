@@ -1,0 +1,99 @@
+# nginx template (${SERVER_NAME}, ${HSTS_MAX_AGE} are substituted by the official image entrypoint).
+# Only 80/443 are public; api:8000 is reachable inside the Docker network only.
+
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=30r/s;
+limit_req_zone $binary_remote_addr zone=auth_limit:10m rate=5r/s;
+server_tokens off;
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+server {
+    listen 80;
+    server_name ${SERVER_NAME};
+
+    location = /nginx-health { access_log off; default_type text/plain; return 200 "ok\n"; }
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${SERVER_NAME};
+
+    ssl_certificate     /etc/nginx/certs/current/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/current/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # Moodle zips with many PDFs can be big: the app cap is processing.max_upload_mb
+    # (config/settings.json; UPLOAD_LIMIT_MB must match it) plus multipart overhead.
+    client_max_body_size ${UPLOAD_BODY_LIMIT};
+
+    # Oversized uploads never reach the API, so nginx itself must answer in the API's JSON
+    # error shape ({"detail": ...}) for the web UI to show a readable message, not an HTML page.
+    error_page 413 = @api_413;
+    location @api_413 {
+        internal;
+        default_type application/json;
+        return 413 '{"detail": "The file is larger than the ${UPLOAD_LIMIT_MB} MB upload limit. Split the Moodle export, or copy the files with the AWS CLI (Source files → Copy with the AWS CLI)."}';
+    }
+
+    add_header Strict-Transport-Security "max-age=${HSTS_MAX_AGE}" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;   # SAMEORIGIN: the app embeds its own PDF endpoint
+    add_header Referrer-Policy "no-referrer" always;
+
+    # API docs are not exposed publicly
+    location ~ ^/api/(docs|redoc|openapi\.json) { return 404; }
+
+    location /api/auth/ {
+        limit_req zone=auth_limit burst=10 nodelay;
+        set $api http://api:8000;
+        proxy_pass $api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Server-Sent Events: no buffering, long timeout
+    location ~ ^/api/runs/[0-9]+/events$ {
+        set $api http://api:8000;
+        proxy_pass $api;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+    }
+
+    location /api/ {
+        limit_req zone=api_limit burst=60 nodelay;
+        limit_req_status 429;
+        set $api http://api:8000;
+        proxy_pass $api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_request_buffering off;     # stream big uploads to the API instead of spooling to disk first
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    # React single-page app: any non-file path falls back to index.html (client-side routing)
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri /index.html;
+    }
+    location /assets/ {
+        root /usr/share/nginx/html;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+}

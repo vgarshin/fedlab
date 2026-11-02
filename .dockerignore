@@ -1,0 +1,7 @@
+config/secrets.json
+_reqs/
+web/node_modules/
+web/dist/
+**/__pycache__/
+.env
+_design/
