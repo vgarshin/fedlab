@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 from arq import Retry
 from arq.connections import RedisSettings
 
-from core import pipeline, registry
+from core import pipeline, registry, run_delete
 from core.llm import BudgetExceeded
 from core.config import get_secrets, get_settings
 from core import migrate
@@ -34,6 +34,11 @@ async def ingest_run_job(ctx: dict, run_id: int) -> dict:
         log.exception("ingest of run %s failed", run_id)
         await pipeline.fail_run(app, run_id, f"{type(exc).__name__}: {exc}")
         return {"failed": True}
+
+
+async def delete_run_job(ctx: dict, run_id: int, user_id: int | None = None) -> dict:
+    """Staged deletion started from the run page's Danger zone; the body lives in core.run_delete."""
+    return await run_delete.delete_run_job(ctx["app"], run_id, user_id)
 
 
 async def export_run_job(ctx: dict, run_id: int) -> dict:
@@ -68,7 +73,7 @@ def _redis_settings() -> RedisSettings:
 
 
 class WorkerSettings:
-    functions = [ingest_run_job, stage_item_job, export_run_job, team_pipeline_job]
+    functions = [ingest_run_job, stage_item_job, export_run_job, team_pipeline_job, delete_run_job]
     on_startup = startup
     redis_settings = _redis_settings()
     max_jobs = get_settings().processing.worker_concurrency

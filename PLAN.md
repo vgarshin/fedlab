@@ -1,6 +1,6 @@
 # fedlab — AI grading system for the Federal Business Solutions Lab (autumn 2026)
 
-Status: **v2 — owner decisions incorporated (see §0). No code is written yet.** Source requirements: `../03-federal-lab-autumn-2026-plan.md`, the task brief, the spring pipeline `../cosmos/spacemonkeys`, the reference architecture `../../metadocs`.
+Status: **v2 — owner decisions incorporated (see §0). No code is written yet.** Source requirements: `plans/03-federal-lab-autumn-2026-plan.md`, the task brief, the spring pipeline `../cosmos/spacemonkeys`, the reference architecture `../../metadocs`.
 
 ## 0. Decisions taken (round 1)
 
@@ -348,3 +348,26 @@ Fixes (defence in depth, no `STAGE_VERSION` bump — done units keep their manif
 * `core/stages/grading.py`: `_schema_problem()` turns pydantic errors into a compact Russian hint for the repair prompt; misplaced `scores` keys get an explicit "перенеси на верхний уровень JSON-объекта" instruction. The repair attempt is now requested with `use_cache=False` (never replays), and every rejected answer is evicted from the cache via the new `Gateway.evict()` (`core/llm.py`), so both a retry inside a run and a re-run after a failure actually reach the model.
 * Unblocking the live run (done, 02.11): after deploy, stage 4 `only_failed` re-graded both teams. Attempt 1 hit the cache, the normalizer made the stored answer parseable — and it was then rejected by the forbidden-words gate; the code evicted it and the repair (a real call, ~3.6 ₽ per work) returned a clean paraphrase. Both works finished `EVALUATED` (58 and 62), flags clean, ~7.3 ₽ total. Do **not** publish a new prompt version or bump `STAGE_VERSION` while a run is in progress: both change the config hash and would invalidate every done `s4_grade` manifest (full paid re-grade). A one-line prompt hardening (§20: "эти поля — только на верхнем уровне, не внутри scores") can go into a future prompt version for new runs.
 * Tests: lifting (schema + pipeline, single cached call), top-level preference, unknown-key drop, repair-hint text, and no-replay-after-eviction. 88 passed.
+
+## 36. Run deletion in the UI (02.11)
+`core/admin_tools delete-run` existed as an operator CLI; deleting a run is now possible from its page:
+* `POST /api/runs/{id}/delete` with `{"confirm": "DELETE"}` — the same typed-confirmation pattern as Settings → Danger zone (the UI adds a browser confirm on top). Refuses with 409 while the run is `ingesting` or has queued/running items: a busy run is never deleted under its workers' feet.
+* Deletes exactly the run's own data: the DB rows (`llm_calls`, `stage_items`, `teams`, the `runs` row) and the bucket prefixes `input/<id>/`, `_work/<id>/`, `<id>/` (results). The shared `_cache/` (paid answers, reused across runs) and the `incoming/` batches are untouched, so other runs and their data are unaffected. Audit-logged as `run_delete`.
+* Web: a *Danger zone · delete this run* card at the end of every run page (admin only, hidden for viewers); after a successful delete the user is sent back to the Runs list.
+* Tests: confirmation required, wrong word rejected, busy-run 409, only the target run's objects and rows removed (another run's files and the cache survive), viewer gets 403 in the permission matrix.
+
+## 37. Deletion with per-stage progress bars (02.11)
+Deleting a big run meant minutes inside one HTTP request (hundreds of S3 calls) with only a spinner. Deletion now works like ingest (§34): the API queues, the worker deletes, progress flows over the existing Redis → SSE pipe.
+* `POST /api/runs/{id}/delete` (same typed `DELETE` confirmation) now flips the run to a new **`deleting`** status, audit-logs `run_delete_start` and enqueues `delete_run_job` (arq job id `delete:<run_id>`, so a double click cannot queue twice) and answers `{"queued": true}` immediately.
+* The worker deletes in **four stages**, each reported as `{type: "delete", stage, done, total}` on the run's channel: `input` (`input/<id>/`), `work` (`_work/<id>/`), `results` (`<id>/` in the result bucket), `db` (`llm_calls` + `stage_items` + `teams` + the run row). Objects are listed first (totals for the bars), deletes are throttled-publish every 0.5 s. Final event: `{status: "done", objects}` — the UI then returns to the Runs list — or `{status: "error"}`.
+* Failure (e.g. S3 error): the run is marked **failed** with the reason in the note (`pipeline.fail_run`, published as a normal run event) and the card offers **Delete run again** — the deletion is idempotent (S3 deletes and `unlink(missing_ok)`), finished stages list empty and are skipped.
+* Guard: a `deleting` run refuses new work (409 on stage start, run-all, export, upload, use-incoming, reingest, config change) so no stage can recreate files after their prefix was wiped.
+* Web: the danger card swaps to a **DeleteBar** — one labelled row per stage with its own gradient bar, ✓ when finished, indeterminate until the first tick; `deleting` badge (warn colour) on the run page and the Runs list. The SSE hook now dispatches `delete` events next to `ingest` ones; navigation to Runs happens on the `done` event, not on the POST.
+* Audit trail: `run_delete_start` (API, who) + `run_delete_done` (worker, how many objects). `core/admin_tools delete-run` CLI unchanged in behaviour.
+* Tests: staged events with correct totals and removal (cache survives), failure → failed + retry finishes, API queues with dedupe-id and guards (double delete / stage start / run-all 409), viewer 403 unchanged.
+
+## 38. Fix: live events never reached the browser; clearer delete bars (03.11)
+Production: the delete strip showed four indeterminate bars forever, then the run silently vanished from the Runs list. Root cause (pre-existing, affected **all** live progress — ingest, run status, deletion):
+* Redis pub/sub delivers **bytes** (the API's client is created without `decode_responses`), and the SSE endpoint interpolated the payload raw: the browser received `data: b'{...}'`, `JSON.parse` threw, and every event was silently dropped in the `catch`. Verified against the production Redis (`get_message` → `bytes`). This is also why batches used to sit on a bare `ingesting` badge (§34's motivation). Fix: `sse_line()` decodes bytes to text before framing; unit test covers bytes / str / keepalive.
+* Delete-bar clarity (owner feedback: "four bars with no real progress"): stages run strictly in order, so exactly **one** bar animates — the active stage, with its `done / total` counts; finished stages show a ✓ with final counts; not-yet-started stages are dim and still (`.delete-row.pending`); the header shows the overall % once the first tick arrives (before that: "Starting…"). No more four identical running bars.
+* Safety net: if the run page gets a **404** (deletion finished but the `done` event was missed, e.g. across a reconnect), it refreshes the Runs list and navigates there instead of showing an error.

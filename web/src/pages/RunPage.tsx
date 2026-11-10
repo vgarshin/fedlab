@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "../api";
-import type { CostInfo, IngestEvent, ItemStatus, Me, Run, TeamRow } from "../types";
+import { api, ApiError } from "../api";
+import type { CostInfo, DeleteEvent, DeleteProgress, IngestEvent, ItemStatus, Me, Run, TeamRow } from "../types";
 import StatusBadge from "../components/StatusBadge";
 import RunConfigCard from "../components/RunConfigCard";
 import ExportCard, { ExportActions } from "../components/ExportCard";
@@ -10,6 +10,7 @@ import Switch from "../components/Switch";
 import BackLink from "../components/BackLink";
 import SourceFiles from "../components/SourceFiles";
 import IngestBar from "../components/IngestBar";
+import DeleteBar from "../components/DeleteBar";
 
 // Stage 1 (ingest) is a run-level job; the others are per-team units that the admin starts.
 const FLAG_HELP: Record<string, string> = {
@@ -29,17 +30,18 @@ const ORDER: ItemStatus[] = ["done", "running", "queued", "failed", "pending"];
 
 // A custom hook (name starts with "use"): reusable logic that can call other hooks.
 // It opens ONE long-lived HTTP connection (Server-Sent Events). Ingest-progress ticks update a
-// local state directly (they arrive every 2 s and must not trigger refetches); every other event
-// tells React Query that run/teams data is stale -> they refetch.
-function useRunEvents(runId: string, onIngest: (p: IngestEvent | null) => void) {
+// local state directly (they arrive every 2 s and must not trigger refetches); delete-progress
+// ticks do the same; every other event tells React Query that run/teams data is stale -> they refetch.
+function useRunEvents(runId: string, onIngest: (p: IngestEvent | null) => void, onDelete: (p: DeleteEvent) => void) {
   const qc = useQueryClient();
   const timer = useRef<number>();
   useEffect(() => {
     const es = new EventSource(`/api/runs/${runId}/events`);
     es.onmessage = (e) => {
-      let ev: { type?: string; status?: string } & Partial<IngestEvent>;
+      let ev: { type?: string; status?: string } & Partial<IngestEvent> & Partial<Omit<DeleteEvent, "type" | "status">>;
       try { ev = JSON.parse(e.data); } catch { return; }
       if (ev?.type === "ingest") { onIngest(ev as IngestEvent); return; }
+      if (ev?.type === "delete") { onDelete(ev as DeleteEvent); return; }
       if (ev?.type === "run" && ev.status !== "ingesting") onIngest(null);  // ready / failed: drop the bar
       window.clearTimeout(timer.current); // debounce: a burst of events causes one refetch
       timer.current = window.setTimeout(() => {
@@ -48,17 +50,40 @@ function useRunEvents(runId: string, onIngest: (p: IngestEvent | null) => void) 
       }, 300);
     };
     return () => es.close(); // cleanup runs when the component goes away: no leaked connections
-  }, [runId, qc, onIngest]);
+  }, [runId, qc, onIngest, onDelete]);
 }
 
 export default function RunPage({ me }: { me: Me }) {
   const { runId = "" } = useParams(); // the ":runId" part of the URL
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [ingest, setIngest] = useState<IngestEvent | null>(null);
-  useRunEvents(runId, setIngest);
+  const [delConfirm, setDelConfirm] = useState("");
+  const [deleting, setDeleting] = useState<DeleteProgress | null>(null);
+  useEffect(() => { setDeleting(null); }, [runId]);   // a different run starts with a clean strip
+  // Delete events update the local strip directly (like ingest ticks). The final "done" event means
+  // the run no longer exists: refresh the list and go back to the Runs page.
+  const onDeleteEvent = useCallback((ev: DeleteEvent) => {
+    if (ev.status === "done") { qc.invalidateQueries({ queryKey: ["runs"] }); navigate("/"); return; }
+    setDeleting((prev) => {
+      const base: DeleteProgress = prev ?? { stages: {} };
+      if (ev.status === "error") return { ...base, error: ev.error ?? "Deletion failed" };
+      if (ev.stage) return { ...base, stages: { ...base.stages, [ev.stage]: { done: ev.done ?? 0, total: ev.total ?? 0 } } };
+      return base;
+    });
+  }, [qc, navigate]);
+  useRunEvents(runId, setIngest, onDeleteEvent);
 
   const run = useQuery({ queryKey: ["run", runId], queryFn: () => api.get<Run>(`/api/runs/${runId}`) });
   const teams = useQuery({ queryKey: ["teams", runId], queryFn: () => api.get<TeamRow[]>(`/api/runs/${runId}/teams`) });
+  // Safety net: a 404 means the run was deleted (its "done" event may have been missed, for example
+  // across a reconnect). Refresh the list and show the user the Runs page instead of an error.
+  useEffect(() => {
+    if (run.isError && run.error instanceof ApiError && run.error.status === 404) {
+      qc.invalidateQueries({ queryKey: ["runs"] });
+      navigate("/");
+    }
+  }, [run.isError, run.error, qc, navigate]);
 
   const cost = useQuery({ queryKey: ["cost", runId], queryFn: () => api.get<CostInfo>(`/api/runs/${runId}/cost`), refetchInterval: 5000 });
   const refresh = () => { qc.invalidateQueries({ queryKey: ["run", runId] }); qc.invalidateQueries({ queryKey: ["teams", runId] }); };
@@ -73,6 +98,18 @@ export default function RunPage({ me }: { me: Me }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["run", runId] }),
   });
   const runAll = useMutation({ mutationFn: (only_failed: boolean) => api.post<{ queued: number }>(`/api/runs/${runId}/run-all`, { only_failed }), onSuccess: refresh });
+  // Same confirmation pattern as clearing the cache in Settings: a typed word + a browser confirm.
+  // The POST only queues the staged deletion; the bars fill from SSE events, and the "done" event
+  // sends the user back to the Runs page.
+  const delRun = useMutation({
+    mutationFn: () => api.post<{ queued: boolean }>(`/api/runs/${runId}/delete`, { confirm: delConfirm }),
+    onSuccess: () => {
+      setDelConfirm("");
+      setDeleting((prev) => (prev ? { ...prev, error: null } : prev));   // a retry clears the old error
+      qc.invalidateQueries({ queryKey: ["run", runId] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
+    },
+  });
 
   if (run.isLoading) return <p className="muted">Loading…</p>;
   if (run.isError || !run.data) return <p className="error">{String(run.error)}</p>;
@@ -170,6 +207,32 @@ export default function RunPage({ me }: { me: Me }) {
       <div style={{ marginTop: "1rem" }}>
         <ExportCard runId={runId} />
       </div>
+
+      {admin && (
+        <div className="card danger" style={{ marginTop: "var(--gap)" }}>
+          <h3>⚠ Danger zone · delete this run</h3>
+          {(() => {
+            const showBar = r.status === "deleting" || deleting != null;
+            const showForm = !showBar || !!deleting?.error;   // after a failure the run can be deleted again
+            return (
+              <>
+                {showBar && <DeleteBar progress={deleting ?? { stages: {} }} />}
+                {!showBar && <p className="small">Deletes the run “{r.name}” completely: its works, stage history and cost records, plus all its files
+                  in both buckets (sources <code>input/{r.id}/</code>, intermediate <code>_work/{r.id}/</code> and the exported results <code>{r.id}/</code>).
+                  The shared answer cache and the source batches are kept, so other runs are not affected. <strong>This cannot be undone.</strong></p>}
+                {showForm && (
+                  <p className="row">
+                    <input placeholder="type DELETE to confirm" value={delConfirm} onChange={(ev) => setDelConfirm(ev.target.value)} style={{ minWidth: "12rem" }} />
+                    <button className="btn danger-btn" disabled={delRun.isPending || delConfirm !== "DELETE"}
+                      onClick={() => { if (window.confirm(`Really delete run “${r.name}” and all its files? This cannot be undone.`)) delRun.mutate(); }}>Delete run</button>
+                    {delRun.isError && <span className="error">{String(delRun.error)}</span>}
+                  </p>
+                )}
+              </>
+            );
+          })()}
+        </div>
+      )}
     </>
   );
 }

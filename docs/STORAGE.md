@@ -52,3 +52,12 @@ The export is a pure function of stored artifacts: *Rebuild export* can be press
 * All intermediate results are stored per team with manifests (cosmos kept them in memory; a failure meant a restart).
 * Creating a run refuses to start if its prefix already holds objects (protects against run-id reuse after a database reset).
 * Dev and production currently share the same two buckets: use the `local` storage backend or distinct prefixes for experiments that must not touch production data.
+
+## Deleting a run (Run page → Danger zone, admin)
+`POST /api/runs/{id}/delete` with the typed confirmation `DELETE` queues a worker job that removes exactly the run's own data, stage by stage (each stage reported as live progress on the run page):
+1. `input/<run>/` in the data bucket — the Moodle sources of this run.
+2. `_work/<run>/` in the data bucket — intermediate artifacts and manifests.
+3. `<run>/` in the result bucket — exported results.
+4. Database rows — `llm_calls`, `stage_items`, `teams`, then the `runs` row (after it, the run disappears from the Runs list).
+
+**Never touched**: the shared answer cache `_cache/llm/` and `_cache/ocr/` (paid answers, reused by all runs), the `incoming/<batch>/` source batches (a batch used by another run must survive), and every other run's data. The deletion is audit-logged (`run_delete_start` / `run_delete_done`) and idempotent: if it fails midway (the run is marked `failed` with the reason), starting it again skips the already-empty prefixes. While the run is `deleting`, no new work can be queued on it, so no stage can recreate files after their prefix was wiped.

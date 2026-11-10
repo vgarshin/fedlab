@@ -11,7 +11,7 @@ explain the React idea it uses.
 | Effects (`useEffect`) | `RunPage.tsx` (`useRunEvents`) | Code that talks to the outside world (open a connection) and cleans up after itself. |
 | Server data (`useQuery`) | `App.tsx`, `RunsPage.tsx` | "Fetch this, cache it, tell me loading / error / data." Library: TanStack Query. |
 | Writes (`useMutation`) | `RunsPage.tsx`, `RunPage.tsx` | A POST/PATCH; on success we *invalidate* cached queries so they refetch. |
-| Routing | `App.tsx` | The URL decides which page component is shown; `:runId` is read with `useParams()`. |
+| Routing | `App.tsx`, `RunPage.tsx` | The URL decides which page component is shown; `:runId` is read with `useParams()`; after an action `useNavigate()` can move to another page (RunPage goes to the Runs list after deleting the run). |
 | Custom hook | `useRunEvents`, `useArtifact` | Your own `useSomething` function that reuses other hooks. |
 | Live updates | `RunPage.tsx` | Server-Sent Events: the server pushes "something changed", we refetch. |
 | Types | `types.ts`, `api.ts` | TypeScript describes the JSON shapes; the compiler catches typos before runtime. |

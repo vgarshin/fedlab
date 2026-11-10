@@ -95,6 +95,11 @@ export interface IngestEvent {
   register_done: number; register_total: number; // phase 3: registering teams (hash + manifest)
 }
 
+// Worker -> SSE while a run is being deleted: one counter per stage (files in each bucket, then DB rows).
+export type DeleteStage = "input" | "work" | "results" | "db";
+export interface DeleteEvent { type: "delete"; stage?: DeleteStage; done?: number; total?: number; status?: "done" | "error"; error?: string }
+export interface DeleteProgress { stages: Partial<Record<DeleteStage, { done: number; total: number }>>; error?: string | null }
+
 export interface PlaygroundOptions {
   prompts: { id: number; name: string; version: number; status: string; est_tokens: number }[];
   models: { id: string; label: string }[];

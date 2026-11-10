@@ -102,6 +102,7 @@ class ConfigPatch(BaseModel):
 async def put_config(run_id: int, body: ConfigPatch, user: Admin, db: Db) -> dict:
     """Per-run options only (OCR, budget cap). Models and prompts come from the Settings page."""
     run = await get_run(db, run_id)
+    ensure_not_deleting(run)
     run.config = body.config.model_dump()
     db.add(AuditLog(user_id=user.id, action="run_config", details={"run": run_id}))
     await db.commit()
@@ -180,6 +181,7 @@ async def upload(run_id: int, state: State, user: Admin, db: Db, submissions: Up
     """Stage 1 from the browser: creates a NEW batch (zip + optional worksheet CSV) and attaches it to this run.
     The batch name is yours (default YYYYMMDD-HHMM); an existing name is refused."""
     run = await get_run(db, run_id)
+    ensure_not_deleting(run)
     from api import batch_ops as ops
     name = ops.check_name(batch_name) if batch_name else await ops.unique_default(state, db)
     row = await ops.store_upload(state, db, user, name, submissions, worksheet)
@@ -200,6 +202,7 @@ async def use_incoming(run_id: int, body: IncomingUse, state: State, user: Admin
     """Stage 1 from the bucket: attach a valid, unchanged batch (incoming/<batch>/) to this run. Can be called again
     with ANOTHER batch to add late files; a batch itself is never extended."""
     run = await get_run(db, run_id)
+    ensure_not_deleting(run)
     from api import batch_ops as ops
     src = await ops.use_batch(state, db, run, body.batch, user)
     db.add(AuditLog(user_id=user.id, action="use_incoming", details={"run": run_id, "batch": body.batch}))
@@ -211,7 +214,8 @@ async def use_incoming(run_id: int, body: IncomingUse, state: State, user: Admin
 @router.post("/{run_id}/export")
 async def start_export(run_id: int, state: State, user: Admin, db: Db) -> dict:
     """Stage 5: (re)build the result tree in the result bucket from the stored grades."""
-    await get_run(db, run_id)
+    run = await get_run(db, run_id)
+    ensure_not_deleting(run)
     db.add(AuditLog(user_id=user.id, action="export", details={"run": run_id}))
     await db.commit()
     await state.queue.enqueue_job("export_run_job", run_id, _job_id=f"export:{run_id}")
@@ -272,7 +276,8 @@ class StageStart(BaseModel):
 @router.post("/{run_id}/stages/{stage}/start")
 async def start_stage(run_id: int, stage: str, body: StageStart, state: State, user: Admin, db: Db) -> dict:
     """Enqueue every team whose item is not 'done' (= resume), or only failed ones."""
-    await get_run(db, run_id)
+    run = await get_run(db, run_id)
+    ensure_not_deleting(run)
     if stage not in pipeline.IMPLEMENTED_STAGES:
         raise HTTPException(400, f"Stage {stage} is not available. Available: {list(pipeline.IMPLEMENTED_STAGES)}")
     ctx = pipeline.Ctx(state.sessions, state.stores, state.settings, state.secrets, state.redis)
@@ -292,6 +297,7 @@ async def run_all(run_id: int, body: StageStart, state: State, user: Admin, db: 
     """Resume / run ALL stages (2 -> 3 if on -> 4 -> export) for every work in one click.
     Finished units are skipped by their manifests, so this is also the 'resume' button."""
     run = await get_run(db, run_id)
+    ensure_not_deleting(run)
     if run.status not in ("ready",):
         raise HTTPException(409, f"Run is '{run.status}': wait until stage 1 is finished (status ready)")
     ctx = pipeline.Ctx(state.sessions, state.stores, state.settings, state.secrets, state.redis)
@@ -308,6 +314,7 @@ async def run_all(run_id: int, body: StageStart, state: State, user: Admin, db: 
 async def reingest(run_id: int, state: State, user: Admin, db: Db) -> dict:
     """Re-read the run's source (UI upload or incoming batch): picks up late files, skips what is already copied."""
     run = await get_run(db, run_id)
+    ensure_not_deleting(run)
     if not run.source:
         raise HTTPException(409, "This run has no source yet: upload files or choose a batch first")
     run.status = "uploaded"
@@ -315,6 +322,39 @@ async def reingest(run_id: int, state: State, user: Admin, db: Db) -> dict:
     await db.commit()
     await state.queue.enqueue_job("ingest_run_job", run_id, _job_id=f"ingest:{run_id}:{int(__import__('time').time())}")
     return {"ok": True}
+
+
+class RunDelete(BaseModel):
+    confirm: str = ""
+
+
+def ensure_not_deleting(run: Run) -> None:
+    """A run being deleted must not accept new work: its prefixes may already be gone."""
+    if run.status == "deleting":
+        raise HTTPException(409, "This run is being deleted right now")
+
+
+@router.post("/{run_id}/delete")
+async def delete_run(run_id: int, body: RunDelete, state: State, user: Admin, db: Db) -> dict:
+    """Queue a staged deletion of the whole run (sources, work files, exported results, database rows),
+    confirmed by typing DELETE (the same pattern as clearing the cache in Settings). The worker reports
+    live progress per stage over SSE; when it finishes, the UI returns to the Runs list. The shared
+    LLM/OCR cache (_cache/) and the incoming batches are NOT touched, so other runs are unaffected."""
+    run = await get_run(db, run_id)
+    if body.confirm != "DELETE":
+        raise HTTPException(400, "Type DELETE to confirm")
+    if run.status == "deleting":
+        raise HTTPException(409, "The run is already being deleted")
+    busy = run.status == "ingesting" or (await db.execute(
+        select(StageItem.id).where(StageItem.run_id == run_id,
+                                   StageItem.status.in_(("queued", "running"))).limit(1))).scalar_one_or_none()
+    if busy:
+        raise HTTPException(409, "The run is being processed right now; wait until it is idle, then delete")
+    run.status = "deleting"
+    db.add(AuditLog(user_id=user.id, action="run_delete_start", details={"run": run_id, "name": run.name}))
+    await db.commit()
+    await state.queue.enqueue_job("delete_run_job", run_id, user.id, _job_id=f"delete:{run_id}")   # same id => queued once
+    return {"queued": True}
 
 
 @router.get("/{run_id}/teams")
@@ -374,6 +414,19 @@ async def team_file(run_id: int, team_id: int, state: State, _: CurrentUser, db:
                     headers={"Content-Disposition": "inline", "X-Content-Type-Options": "nosniff"})
 
 
+def sse_line(msg: dict | None) -> str:
+    """One SSE frame from a redis pub/sub message. The payload can arrive as bytes (the client is
+    created without decode_responses), and a bare f-string would render it as `data: b'{...}'` —
+    which the browser's JSON.parse silently rejects, dropping every live event (progress, run
+    status, deletion) — so bytes are decoded here."""
+    if not msg:
+        return ": keepalive\n\n"
+    data = msg["data"]
+    if isinstance(data, bytes):
+        data = data.decode()
+    return f"data: {data}\n\n"
+
+
 @router.get("/{run_id}/events")
 async def run_events(run_id: int, state: State, _: CurrentUser):
     """Server-Sent Events: the browser keeps one HTTP connection open and receives progress pushes."""
@@ -384,8 +437,7 @@ async def run_events(run_id: int, state: State, _: CurrentUser):
         try:
             yield "retry: 3000\n\n"
             while True:
-                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=15)
-                yield f"data: {msg['data']}\n\n" if msg else ": keepalive\n\n"
+                yield sse_line(await pubsub.get_message(ignore_subscribe_messages=True, timeout=15))
         finally:
             await pubsub.unsubscribe()
             await pubsub.aclose()
