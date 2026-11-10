@@ -183,6 +183,44 @@ async def test_ocr_setting_and_cache_clear_needs_confirmation(tmp_path):
         assert await st.stores.data.exists("_cache/ocr/x/p1.json") and await st.stores.data.exists("_work/1/t/s4_grade.json")
 
 
+async def test_delete_run_needs_confirmation_and_spares_other_runs(tmp_path):
+    from core.db import Run, Team
+    c, q = await seeded_client(tmp_path)
+    async with c:
+        await login(c)
+        st = c._transport.app.state.fedlab
+        kid = (await c.post("/api/runs", json={"name": "keep"}, headers=H)).json()["id"]
+        gid = (await c.post("/api/runs", json={"name": "gone"}, headers=H)).json()["id"]
+        async with st.sessions() as s:
+            s.add(Team(run_id=gid, name="A", slug="A"))
+            await s.commit()
+        await st.stores.data.put(f"input/{gid}/x.pdf", b"x")
+        await st.stores.data.put(f"input/{kid}/keep.pdf", b"x")       # another run's data
+        await st.stores.data.put("_cache/llm/m/a.json", b"{}")        # the shared answer cache
+        assert (await c.post(f"/api/runs/{gid}/delete", json={}, headers=H)).status_code == 400                    # no confirmation
+        assert (await c.post(f"/api/runs/{gid}/delete", json={"confirm": "CLEAR"}, headers=H)).status_code == 400  # wrong word
+        async with st.sessions() as s:
+            (await s.get(Run, gid)).status = "ingesting"
+            await s.commit()
+        assert (await c.post(f"/api/runs/{gid}/delete", json={"confirm": "DELETE"}, headers=H)).status_code == 409  # busy: protected
+        async with st.sessions() as s:
+            (await s.get(Run, gid)).status = "ready"
+            await s.commit()
+        r = await c.post(f"/api/runs/{gid}/delete", json={"confirm": "DELETE"}, headers=H)
+        assert r.status_code == 200 and r.json() == {"queued": True}          # the worker does the deletion, not the API
+        assert q.jobs == [("delete_run_job", (gid, 1))]                       # queued once, with the acting admin's id
+        async with st.sessions() as s:
+            assert (await s.get(Run, gid)).status == "deleting"
+        # a deleting run is protected: no double delete, no new work on it
+        assert (await c.post(f"/api/runs/{gid}/delete", json={"confirm": "DELETE"}, headers=H)).status_code == 409
+        assert (await c.post(f"/api/runs/{gid}/stages/s2_extract/start", json={}, headers=H)).status_code == 409
+        assert (await c.post(f"/api/runs/{gid}/run-all", json={}, headers=H)).status_code == 409
+        # nothing was deleted synchronously, and everything outside the run survives
+        assert await st.stores.data.exists(f"input/{gid}/x.pdf")
+        assert await st.stores.data.exists(f"input/{kid}/keep.pdf") and await st.stores.data.exists("_cache/llm/m/a.json")
+        assert {x["id"]: x["status"] for x in (await c.get("/api/runs")).json()} == {kid: "created", gid: "deleting"}
+
+
 async def test_viewer_permissions_matrix(tmp_path):
     c, q = await seeded_client(tmp_path)
     async with c:
@@ -213,6 +251,7 @@ async def test_viewer_permissions_matrix(tmp_path):
         forbidden_post = [("post", "/api/runs", {"name": "x"}), ("post", f"/api/runs/{rid}/run-all", {}), ("post", f"/api/runs/{rid}/export", None),
                           ("post", f"/api/runs/{rid}/stages/s4_grade/start", {}), ("post", f"/api/runs/{rid}/stages/s2_extract/start", {}),
                           ("post", f"/api/runs/{rid}/reingest", None), ("post", f"/api/runs/{rid}/use-incoming", {"batch": "b"}), ("post", "/api/batches", {"name": "abc"}), ("delete", "/api/batches/abc", None),
+                          ("post", f"/api/runs/{rid}/delete", {"confirm": "DELETE"}),
                           ("put", f"/api/runs/{rid}/config", {"config": {"ocr_enabled": True}}), ("put", "/api/settings", {"stages": {"detect_enabled": False}}),
                           ("post", "/api/settings/cache/clear", {"llm": True, "confirm": "CLEAR"}), ("post", "/api/prompts", {"name": "grade_x", "text": "x" * 40}), ("patch", "/api/models/m1", {"enabled": False}),
                           ("post", "/api/users", {"email": "z@example.com"})]
