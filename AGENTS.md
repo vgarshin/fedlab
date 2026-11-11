@@ -1,6 +1,6 @@
-# CLAUDE.md — fedlab
+# AGENTS.md — fedlab
 
-AI grading of student team works (PDF decks from Moodle) with LLMs. Plan and decisions: `PLAN.md` (read first). Language of code, comments, UI and docs: English; LLM prompts: Russian.
+AI grading of student team works (PDF decks from Moodle) with LLMs. Project overview and commands: `README.md`. Decisions and milestone history: the former `PLAN.md` (closed and deleted 2026-11-11; recover with `git log --follow -- PLAN.md`; the source-requirements plan stays in `plans/03-federal-lab-autumn-2026-plan.md`). Language of code, comments, UI and docs: English; LLM prompts: Russian.
 
 ## Rules
 - Store project artifacts only inside `fedlab/`. Reference projects (`../cosmos`, `../../metadocs`) are read-only samples.
